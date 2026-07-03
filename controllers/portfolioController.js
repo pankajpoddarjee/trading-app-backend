@@ -245,25 +245,26 @@ const deleteHolding = async (req, res) => {
     const userId = req.user.id;
     const { id } = req.params;
     
-    // Get holding first to record sell transaction
+    // ✅ Get holding first
     const holdings = await Portfolio.getByUserId(userId);
     const holding = holdings.find(h => h.id == id);
     
-    if (holding) {
-      // Add sell transaction
-      await Transaction.add({
-        userId,
-        symbol: holding.symbol,
-        companyName: holding.company_name,
-        type: 'SELL',
-        quantity: holding.quantity,
-        price: holding.current_price,
-        totalAmount: holding.quantity * holding.current_price,
-      });
+    if (!holding) {
+      return res.status(404).json({ message: 'Holding not found' });
     }
     
+    // ✅ Delete all transactions for this symbol (BUY + SELL)
+    await db.query(
+      'DELETE FROM transactions WHERE user_id = ? AND symbol = ?',
+      [userId, holding.symbol]
+    );
+    
+    // ✅ Delete holding
     await Portfolio.delete(id, userId);
-    res.json({ message: 'Holding deleted successfully' });
+    
+    res.json({ 
+      message: `Holding and all transactions for ${holding.symbol} deleted successfully` 
+    });
   } catch (error) {
     console.error('Delete holding error:', error);
     res.status(500).json({ message: 'Server error: ' + error.message });

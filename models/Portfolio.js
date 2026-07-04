@@ -1,10 +1,14 @@
 const db = require('../config/db');
 
 const Portfolio = {
-  // Get all holdings of a user
+  // Get all holdings of a user with stock details
   getByUserId: async (userId) => {
     const [rows] = await db.query(
-      'SELECT * FROM portfolio WHERE user_id = ? ORDER BY symbol',
+      `SELECT p.*, ms.symbol, ms.company_name 
+       FROM portfolio p
+       JOIN master_stocks ms ON p.stock_id = ms.id
+       WHERE p.user_id = ?
+       ORDER BY ms.symbol`,
       [userId]
     );
     return rows;
@@ -12,11 +16,11 @@ const Portfolio = {
 
   // Add new holding
   add: async (data) => {
-    const { userId, symbol, companyName, quantity, buyPrice, currentPrice } = data;
+    const { userId, stockId, quantity, buyPrice, currentPrice, transactionDate } = data;
     const [result] = await db.query(
-      `INSERT INTO portfolio (user_id, symbol, company_name, quantity, buy_price, current_price) 
+      `INSERT INTO portfolio (user_id, stock_id, quantity, buy_price, current_price, transaction_date) 
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [userId, symbol, companyName, quantity, buyPrice, currentPrice || buyPrice]
+      [userId, stockId, quantity, buyPrice, currentPrice || buyPrice, transactionDate || new Date()]
     );
     return result;
   },

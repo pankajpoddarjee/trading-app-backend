@@ -1,5 +1,6 @@
 const Portfolio = require('../models/Portfolio');
 const Transaction = require('../models/Transaction');
+const MasterStock = require('../models/MasterStock');
 const db = require('../config/db');
 
 // @desc    Get all holdings
@@ -51,19 +52,33 @@ const getHoldings = async (req, res) => {
 const addHolding = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { symbol, companyName, quantity, buyPrice, currentPrice } = req.body;
+    const { symbol, companyName, quantity, buyPrice, currentPrice, transactionDate } = req.body;
     
     // Validation
     if (!symbol || !companyName || !quantity || !buyPrice) {
       return res.status(400).json({ message: 'All fields are required' });
     }
     
+    // ✅ Get or create stock in master
+    let stock = await MasterStock.getBySymbol(symbol.toUpperCase());
+    if (!stock) {
+      await MasterStock.add({
+        symbol: symbol.toUpperCase(),
+        companyName,
+        sector: 'Others',
+        exchange: 'NSE',
+      });
+      stock = await MasterStock.getBySymbol(symbol.toUpperCase());
+    }
+    
+    const stockId = stock.id;
+    
     // Check if already exists
     const existingHoldings = await Portfolio.getByUserId(userId);
-    const existing = existingHoldings.find(h => h.symbol === symbol.toUpperCase());
+    const existing = existingHoldings.find(h => h.stock_id === stockId);
     
     if (existing) {
-      // ✅ Update: add quantity and recalculate average buy price
+      // Update: add quantity and recalculate average buy price
       const totalCost = (existing.quantity * existing.buy_price) + (quantity * buyPrice);
       const newQuantity = existing.quantity + quantity;
       const newAvgPrice = totalCost / newQuantity;
@@ -74,18 +89,16 @@ const addHolding = async (req, res) => {
         currentPrice: currentPrice || buyPrice,
       });
       
-      // Add transaction for new purchase
       await Transaction.add({
         userId,
-        symbol: symbol.toUpperCase(),
-        companyName,
+        stockId,
         type: 'BUY',
         quantity,
         price: buyPrice,
         totalAmount: quantity * buyPrice,
+        transactionDate: transactionDate || new Date(),
       });
       
-      // ✅ Update user balance (deduct money)
       await db.query(
         'UPDATE users SET balance = balance - ? WHERE id = ?',
         [quantity * buyPrice, userId]
@@ -101,24 +114,23 @@ const addHolding = async (req, res) => {
     // New holding
     await Portfolio.add({
       userId,
-      symbol: symbol.toUpperCase(),
-      companyName,
+      stockId,
       quantity,
       buyPrice,
       currentPrice: currentPrice || buyPrice,
+      transactionDate: transactionDate || new Date(),
     });
     
     await Transaction.add({
       userId,
-      symbol: symbol.toUpperCase(),
-      companyName,
+      stockId,
       type: 'BUY',
       quantity,
       price: buyPrice,
       totalAmount: quantity * buyPrice,
+      transactionDate: transactionDate || new Date(),
     });
     
-    // ✅ Update user balance (deduct money)
     await db.query(
       'UPDATE users SET balance = balance - ? WHERE id = ?',
       [quantity * buyPrice, userId]
@@ -137,16 +149,22 @@ const addHolding = async (req, res) => {
 const sellHolding = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { symbol, quantity, sellPrice } = req.body;
+    const { symbol, quantity, sellPrice, transactionDate } = req.body; // ✅ Add transactionDate
     
     // Validation
     if (!symbol || !quantity || !sellPrice) {
       return res.status(400).json({ message: 'Symbol, quantity and sell price are required' });
     }
     
-    // Check if holding exists
+    // ✅ Get stock_id from symbol
+    const stock = await MasterStock.getBySymbol(symbol.toUpperCase());
+    if (!stock) {
+      return res.status(404).json({ message: 'Stock not found in master' });
+    }
+    const stockId = stock.id;
+    
     const holdings = await Portfolio.getByUserId(userId);
-    const holding = holdings.find(h => h.symbol === symbol.toUpperCase());
+    const holding = holdings.find(h => h.stock_id === stockId);
     
     if (!holding) {
       return res.status(404).json({ message: 'Holding not found for this symbol' });
@@ -161,22 +179,20 @@ const sellHolding = async (req, res) => {
     const remainingQuantity = holding.quantity - quantity;
     const totalSellAmount = quantity * sellPrice;
     
-    // Add sell transaction
+    // ✅ Add sell transaction with transactionDate
     await Transaction.add({
       userId,
-      symbol: symbol.toUpperCase(),
-      companyName: holding.company_name,
+      stockId,
       type: 'SELL',
       quantity,
       price: sellPrice,
       totalAmount: totalSellAmount,
+      transactionDate: transactionDate || new Date(), // ✅ Use provided date or default
     });
     
     if (remainingQuantity === 0) {
-      // Delete holding if quantity becomes 0
       await Portfolio.delete(holding.id, userId);
     } else {
-      // Update holding with remaining quantity
       await Portfolio.update(holding.id, userId, {
         quantity: remainingQuantity,
         buyPrice: holding.buy_price,
@@ -184,7 +200,6 @@ const sellHolding = async (req, res) => {
       });
     }
     
-    // ✅ Update user balance (add money)
     await db.query(
       'UPDATE users SET balance = balance + ? WHERE id = ?',
       [totalSellAmount, userId]
@@ -195,8 +210,8 @@ const sellHolding = async (req, res) => {
       remainingQuantity,
       totalSellAmount,
       sellPrice,
+      transactionDate: transactionDate || new Date(),
     });
-    
   } catch (error) {
     console.error('Sell holding error:', error);
     res.status(500).json({ message: 'Server error: ' + error.message });
@@ -245,7 +260,6 @@ const deleteHolding = async (req, res) => {
     const userId = req.user.id;
     const { id } = req.params;
     
-    // ✅ Get holding first
     const holdings = await Portfolio.getByUserId(userId);
     const holding = holdings.find(h => h.id == id);
     
@@ -253,17 +267,15 @@ const deleteHolding = async (req, res) => {
       return res.status(404).json({ message: 'Holding not found' });
     }
     
-    // ✅ Delete all transactions for this symbol (BUY + SELL)
     await db.query(
-      'DELETE FROM transactions WHERE user_id = ? AND symbol = ?',
-      [userId, holding.symbol]
+      'DELETE FROM transactions WHERE user_id = ? AND stock_id = ?',
+      [userId, holding.stock_id]
     );
     
-    // ✅ Delete holding
     await Portfolio.delete(id, userId);
     
     res.json({ 
-      message: `Holding and all transactions for ${holding.symbol} deleted successfully` 
+      message: `Holding and all transactions deleted successfully` 
     });
   } catch (error) {
     console.error('Delete holding error:', error);
@@ -278,11 +290,11 @@ const getTransactions = async (req, res) => {
   try {
     const userId = req.user.id;
     const transactions = await Transaction.getByUserId(userId);
-    console.log("📊 Transactions found:", transactions.length); // ✅ Debug log
+    console.log("📊 Transactions found:", transactions.length);
     res.json(transactions || []);
   } catch (error) {
     console.error('Get transactions error:', error);
-    res.status(500).json([]); // ✅ Always return array
+    res.status(500).json([]);
   }
 };
 

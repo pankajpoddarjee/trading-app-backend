@@ -11,7 +11,7 @@ app.use('/api/trade', require('./routes/tradeRoutes'));
 app.use('/api/profile', require('./routes/profileRoutes'));
 app.use('/api/portfolio', require('./routes/portfolioRoutes'));
 app.use('/api/master', require('./routes/masterRoutes'));
-
+app.use('/api/bulk-portfolio', require('./routes/bulkPortfolioRoutes'));
 app.get('/api/health', (req, res) => {
     res.json({ status: 'OK', message: 'Server is running!' });
 });
